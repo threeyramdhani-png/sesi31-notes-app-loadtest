@@ -113,7 +113,9 @@ jobs:
           docker run --rm --network host \
             -v "$PWD/loadtest:/loadtest:ro" \
             -e BASE_URL=http://localhost:3000 \
-            grafana/k6 run /loadtest/script.js
+            grafana/k6 run \
+              --stage 5s:10 --stage 20s:10 --stage 5s:0 \
+              /loadtest/script.js
 
       - name: Print app logs on failure
         if: failure() && hashFiles('app.log') != ''
