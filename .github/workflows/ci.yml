@@ -1,0 +1,124 @@
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (ESLint)
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+  test:
+    name: Unit Test (Jest)
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests with coverage
+        run: npm test
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: error
+
+  sonarqube:
+    name: SonarQube Scan
+    runs-on: self-hosted
+    needs: [lint, test]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage
+          path: coverage
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  k6:
+    name: k6 Smoke Test
+    runs-on: self-hosted
+    needs: [lint, test]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install production dependencies
+        run: npm ci --omit=dev
+
+      - name: Start app
+        run: |
+          nohup node index.js > app.log 2>&1 < /dev/null &
+          echo $! > app.pid
+          for i in $(seq 1 30); do
+            if curl -fs http://localhost:3000/ > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "App did not start in time"
+          cat app.log
+          exit 1
+
+      - name: Run k6
+        run: |
+          docker run --rm --network host \
+            -v "$PWD/loadtest:/loadtest:ro" \
+            -e BASE_URL=http://localhost:3000 \
+            grafana/k6 run /loadtest/script.js
+
+      - name: Print app logs on failure
+        if: failure() && hashFiles('app.log') != ''
+        run: cat app.log
+
+      - name: Stop app
+        if: always() && hashFiles('app.pid') != ''
+        run: kill "$(cat app.pid)"
